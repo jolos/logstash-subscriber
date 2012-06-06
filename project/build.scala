@@ -1,8 +1,10 @@
 import sbt._
+
 object MyApp extends Build
 {
   lazy val root =
-    Project("twine", file(".")) dependsOn(dispatchTwitter)
-  lazy val dispatchTwitter =
-    uri("git://github.com/n8han/dispatch-twitter#0.1.4")
+    Project("", file(".")) dependsOn(dispatchLiftJson)
+  lazy val dispatchLiftJson =
+    uri("git://github.com/dispatch/dispatch-lift-json#0.1.1")
 }
+
