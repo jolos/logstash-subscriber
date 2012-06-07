@@ -16,12 +16,14 @@ import play.api.libs.json._
 
 
 case object Start
+case object Quit
 case class Init(sender: ActorRef) extends Message
 sealed trait Message
-case class RegisterQueryMessage(q: String,index: String, identifier: String) extends Message
+case class InitQueryMessage(index: String, identifier: String) extends Message
+case class RegisterQueryMessage(query: JsValue) extends Message
 // TODO : LogMessage is deprecated
 case class LogMessage(m: String) extends Message
-case class QueryRegistered(channel: Enumerator[JsValue]) extends Message
+case class QueryInitialised(channel: Enumerator[JsValue],iteratee: Iteratee[JsValue,_]) extends Message
 
 /**
  * This object is only used for testing purposes
@@ -38,10 +40,10 @@ object Main {
     val index = "test"
     val identifier = "testquery"
     // register test query
-    val msg = (master ? RegisterQueryMessage(qjson,index,identifier)).asPromise.map {
+    /*val msg = (master ? InitQueryMessage(index,identifier)).asPromise.map {
             case m: QueryRegistered =>
               master ! Start 
-    }
+    }*/
   }
 }
 
@@ -52,9 +54,9 @@ object Main {
 class Master extends Actor with ActorLogging {
   val system = ActorSystem()
   def receive : Receive = {
-      case m: RegisterQueryMessage =>
+      case m: InitQueryMessage =>
         // create the Query actor
-        val query = system.actorOf(Props(new Query(m.q,m.index,m.identifier)), name = m.identifier)
+        val query = system.actorOf(Props(new Query(m.index,m.identifier)), name = m.identifier)
         // initialise it ( register the query to the percolator )
         query ! Init(sender)
 
@@ -72,7 +74,7 @@ class Master extends Actor with ActorLogging {
  * is directly subscribed to the logstash feed ( or anything else, as long as it uses zmq )
  * uses an enumerator to send messages to the user ( most likely a websocket )
  **/
-class Query(qjson: String, index: String, identifier: String) extends Actor with ActorLogging {
+class Query(index: String, identifier: String) extends Actor with ActorLogging {
   var enumerator = Enumerator.imperative[JsValue]()
   def receive : Receive = {
     case m: ZMQMessage => 
@@ -90,15 +92,24 @@ class Query(qjson: String, index: String, identifier: String) extends Actor with
       if( matches contains(identifier)){
         // ok this msg shouln't be filtered out, so let's send it to the client
         enumerator.push(Json.parse(msg))
-      } 
+      }
+      h.shutdown()
 
     case Init(replyto: ActorRef) =>
       log.info("query initalised")
-      val req = url("http://localhost:9200/_percolator/") / index / identifier <<< qjson
+      val iteratee = Iteratee.foreach[JsValue] { json =>
+          // TODO: for now let's assume that the user will only send queries
+          self ! RegisterQueryMessage(json)
+      }.mapDone { _ =>
+          self ! Quit
+      }
+      replyto ! QueryInitialised(enumerator,iteratee)
+    case RegisterQueryMessage(query: JsValue) =>
+      val req = url("http://localhost:9200/_percolator/") / index / identifier << Json.stringify(query)
       val h = new Http
       // TODO: ignoring the response for now, proper exception handling should happen here
       h(req >|)
-      replyto ! QueryRegistered(enumerator)
+      h.shutdown()
     case _ => None
   }
 }
